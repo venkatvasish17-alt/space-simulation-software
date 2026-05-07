@@ -1,0 +1,209 @@
+"""
+Problem 1: Artemis II Orbital Trajectory Simulation
+Physics-based orbital mechanics using NumPy/SciPy
+No external simulation/orbital libraries used.
+
+Assumptions:
+- Two-body problem: Earth + spacecraft (Moon included as optional perturbation)
+- Initial conditions approximate Artemis II mission parameters
+- Point masses assumed for all bodies
+- No atmospheric drag (above atmosphere)
+- Reference frame: Earth-centered inertial (ECI)
+"""
+
+import numpy as np
+from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.patches import Circle
+from matplotlib.colors import LinearSegmentedColormap
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+G   = 6.67430e-11        # Gravitational constant (m³ kg⁻¹ s⁻²)
+M_E = 5.97219e24         # Earth mass (kg)
+M_M = 7.34767e22         # Moon mass (kg)
+R_E = 6.371e6            # Earth radius (m)
+R_M = 1.7374e6           # Moon radius (m)
+
+MU_E = G * M_E           # Earth gravitational parameter
+MU_M = G * M_M           # Moon gravitational parameter
+
+# Moon orbital parameters (simplified circular orbit)
+T_MOON   = 27.3217 * 24 * 3600   # Moon orbital period (s)
+A_MOON   = 3.844e8               # Moon semi-major axis (m)
+OMEGA_M  = 2 * np.pi / T_MOON    # Moon angular velocity (rad/s)
+
+# ─── Artemis II Approximate Initial Conditions ────────────────────────────────
+# Translunar injection orbit:
+#   Perigee ≈ 322 km, Apogee ≈ 369,000 km (near Moon)
+#   Inclination ≈ 0° (simplified to 2D equatorial plane)
+
+PERIGEE_ALT = 322e3          # m
+APOGEE_ALT  = 369_000e3      # m (near lunar distance)
+
+r_p = R_E + PERIGEE_ALT
+r_a = R_E + APOGEE_ALT
+
+a   = (r_p + r_a) / 2       # Semi-major axis
+e   = (r_a - r_p) / (r_a + r_p)   # Eccentricity
+
+# Vis-viva for perigee velocity
+v_p = np.sqrt(MU_E * (2/r_p - 1/a))
+
+# Start at perigee on +x axis, velocity in +y direction
+x0, y0   = r_p, 0.0
+vx0, vy0 = 0.0, v_p
+
+print(f"=== Artemis II Orbital Parameters ===")
+print(f"  Semi-major axis : {a/1e6:.3f} Mm")
+print(f"  Eccentricity    : {e:.4f}")
+print(f"  Perigee altitude: {PERIGEE_ALT/1e3:.1f} km")
+print(f"  Apogee altitude : {APOGEE_ALT/1e3:.1f} km")
+print(f"  Perigee velocity: {v_p/1e3:.3f} km/s")
+
+# ─── Equations of Motion ──────────────────────────────────────────────────────
+def moon_position(t):
+    """Moon position at time t (circular orbit in x-y plane)."""
+    theta = OMEGA_M * t
+    return np.array([A_MOON * np.cos(theta), A_MOON * np.sin(theta)])
+
+def derivatives(t, state, include_moon=True):
+    x, y, vx, vy = state
+    r_vec = np.array([x, y])
+    r     = np.linalg.norm(r_vec)
+
+    # Earth gravity
+    a_earth = -MU_E / r**3 * r_vec
+
+    a_moon = np.zeros(2)
+    if include_moon:
+        r_m   = moon_position(t)
+        dr    = r_vec - r_m
+        dist  = np.linalg.norm(dr)
+        # Moon's direct pull on spacecraft
+        a_moon = -MU_M / dist**3 * dr
+        # Indirect term (non-inertial frame correction)
+        a_moon -= -MU_M / np.linalg.norm(r_m)**3 * r_m
+
+    a_total = a_earth + a_moon
+    return [vx, vy, a_total[0], a_total[1]]
+
+# ─── Integration ──────────────────────────────────────────────────────────────
+T_END = 10 * 24 * 3600   # 10 days in seconds
+t_eval = np.linspace(0, T_END, 50_000)
+
+print("\nIntegrating equations of motion...")
+sol = solve_ivp(
+    derivatives,
+    [0, T_END],
+    [x0, y0, vx0, vy0],
+    method='DOP853',
+    t_eval=t_eval,
+    rtol=1e-10,
+    atol=1e-12,
+    args=(True,)
+)
+
+x, y   = sol.y[0], sol.y[1]
+vx, vy = sol.y[2], sol.y[3]
+t      = sol.t
+
+# ─── Orbital Characteristics ──────────────────────────────────────────────────
+r_arr = np.sqrt(x**2 + y**2)
+v_arr = np.sqrt(vx**2 + vy**2)
+
+apoapsis_r  = r_arr.max()
+periapsis_r = r_arr.min()
+
+# Specific orbital energy (keplerian, from initial conditions)
+eps = 0.5 * v_p**2 - MU_E / r_p
+a_computed = -MU_E / (2 * eps)
+T_period = 2 * np.pi * np.sqrt(a_computed**3 / MU_E)
+
+print(f"\n=== Computed Orbital Characteristics ===")
+print(f"  Apoapsis radius   : {apoapsis_r/1e6:.3f} Mm  ({(apoapsis_r-R_E)/1e3:.1f} km alt)")
+print(f"  Periapsis radius  : {periapsis_r/1e6:.3f} Mm  ({(periapsis_r-R_E)/1e3:.1f} km alt)")
+print(f"  Orbital period    : {T_period/3600:.2f} hours  ({T_period/86400:.2f} days)")
+
+# ─── Visualization ────────────────────────────────────────────────────────────
+fig = plt.figure(figsize=(14, 12), facecolor='#030712')
+ax  = fig.add_subplot(111, facecolor='#030712')
+
+# Starfield
+rng = np.random.default_rng(42)
+sx  = rng.uniform(-5e8, 5e8, 800)
+sy  = rng.uniform(-5e8, 5e8, 800)
+sb  = rng.uniform(0.2, 1.0, 800)
+ax.scatter(sx, sy, s=rng.uniform(0.3, 2.5, 800), c=[[1,1,1,b] for b in sb], zorder=0)
+
+# Trajectory colored by speed
+from matplotlib.collections import LineCollection
+points  = np.array([x, y]).T.reshape(-1, 1, 2)
+segs    = np.concatenate([points[:-1], points[1:]], axis=1)
+speed   = v_arr[:-1] / 1e3   # km/s
+lc      = LineCollection(segs, cmap='plasma', linewidth=1.2, zorder=3)
+lc.set_array(speed)
+lc.set_clim(speed.min(), speed.max())
+ax.add_collection(lc)
+
+# Moon path
+theta_m  = np.linspace(0, 2*np.pi, 500)
+mx_orbit = A_MOON * np.cos(theta_m)
+my_orbit = A_MOON * np.sin(theta_m)
+ax.plot(mx_orbit, my_orbit, '--', color='#ffffff22', linewidth=0.8, zorder=1, label='Moon orbit')
+
+# Moon at t=0
+moon0 = moon_position(0)
+moon_circle = Circle(moon0, R_M * 8, color='#C8C8C8', zorder=4)
+ax.add_patch(moon_circle)
+ax.annotate('Moon', moon0, xytext=(moon0[0]+1.5e7, moon0[1]+1.5e7),
+            color='#aaaaaa', fontsize=9)
+
+# Earth
+earth_circle = Circle((0, 0), R_E * 8, color='#1E5B8A', zorder=5)
+ax.add_patch(earth_circle)
+ax.annotate('Earth', (0, 0), xytext=(R_E*10, R_E*10), color='#7ec8f0', fontsize=9)
+
+# Apoapsis & periapsis markers
+idx_apo  = r_arr.argmax()
+idx_peri = r_arr.argmin()
+ax.scatter(x[idx_apo],  y[idx_apo],  s=80, color='#ff6b6b', zorder=6, label=f'Apoapsis  {(apoapsis_r-R_E)/1e3:.0f} km alt')
+ax.scatter(x[idx_peri], y[idx_peri], s=80, color='#6bffb8', zorder=6, label=f'Periapsis {(periapsis_r-R_E)/1e3:.0f} km alt')
+ax.scatter(x[0], y[0], s=100, color='#ffdd57', marker='*', zorder=7, label='Launch point')
+
+# Colorbar
+cb = plt.colorbar(lc, ax=ax, pad=0.02, fraction=0.025)
+cb.set_label('Speed (km/s)', color='white', fontsize=10)
+cb.ax.yaxis.set_tick_params(color='white')
+plt.setp(cb.ax.yaxis.get_ticklabels(), color='white')
+cb.outline.set_edgecolor('#555555')
+
+ax.set_xlim(-4.2e8, 4.2e8)
+ax.set_ylim(-4.2e8, 4.2e8)
+ax.set_aspect('equal')
+ax.tick_params(colors='#888888')
+for sp in ax.spines.values():
+    sp.set_edgecolor('#333333')
+ax.set_xlabel('x (m)', color='#888888', fontsize=10)
+ax.set_ylabel('y (m)', color='#888888', fontsize=10)
+ax.set_title('Artemis II — Translunar Orbital Trajectory', color='white', fontsize=15, pad=15, fontweight='bold')
+
+leg = ax.legend(loc='lower right', facecolor='#111827', edgecolor='#444444', labelcolor='white', fontsize=9)
+
+# Info box
+info = (
+    f"Perigee alt : {(periapsis_r-R_E)/1e3:.1f} km\n"
+    f"Apogee alt  : {(apoapsis_r-R_E)/1e3:.1f} km\n"
+    f"Period      : {T_period/3600:.1f} h\n"
+    f"Eccentricity: {e:.4f}\n"
+    f"Duration sim: 10 days"
+)
+ax.text(0.02, 0.98, info, transform=ax.transAxes, va='top', ha='left',
+        color='#cccccc', fontsize=9, family='monospace',
+        bbox=dict(boxstyle='round,pad=0.5', facecolor='#111827cc', edgecolor='#333333'))
+
+plt.tight_layout()
+plt.savefig('/mnt/user-data/outputs/problem1_artemis_trajectory.png', dpi=150, bbox_inches='tight',
+            facecolor='#030712')
+print("\nSaved: problem1_artemis_trajectory.png")
+plt.show()
